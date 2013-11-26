@@ -1157,6 +1157,8 @@ unwrap(Value) ->
 %% @end
 %%% ---------------------------------------------------------------------------
 accumulate_error(_Path, ok, Accumulator) -> Accumulator;
+accumulate_error(Path, _Error, Accumulator) when length(Path) < 2 ->
+    {error, Accumulator};
 accumulate_error(Path, Error, {_Result, {Fun, Acc0}}) ->
     StringPath = jesse_json_path:to_string(Path),
     {error, {Fun, Fun(StringPath, Error, Acc0)}}.
