@@ -156,13 +156,13 @@ is_null(_) -> false.
 %% validates the value `Value' against them.
 %% @private
 check_value(Value, [{?TYPE, Type} | Attrs], JsonSchema, Path, Accumulator) ->
-  case check_type(Value, Type) of
-      true -> check_value(Value, Attrs, JsonSchema, Path, Accumulator);
-      false ->
+  case check_type(Value, Type, Accumulator) of
+      {true, _} -> check_value(Value, Attrs, JsonSchema, Path, Accumulator);
+      {false, Accumulator1} ->
           %% In case of incorrect type, no other properties are checked against
           %% this value, since it may not be safe
           Error = {'data_invalid', JsonSchema, 'wrong_type', Value},
-          accumulate_error(Path, Error, Accumulator)
+          accumulate_error(Path, Error, Accumulator1)
   end;
 check_value( Value
            , [{?PROPERTIES, Properties} | Attrs]
@@ -492,38 +492,76 @@ check_value(Value, [_Attr | Attrs], JsonSchema, Path, Accumulator) ->
 %%
 %%  {"type":["string","number"]}
 %% @private
-check_type(Value, ?STRING)  -> is_binary(Value);
-check_type(Value, ?NUMBER)  -> is_number(Value);
-check_type(Value, ?INTEGER) -> is_integer(Value);
-check_type(Value, ?BOOLEAN) -> is_boolean(Value);
-check_type(Value, ?OBJECT)  -> is_json_object(Value);
-check_type(Value, ?ARRAY)   -> is_array(Value);
-check_type(Value, ?NULL)    -> is_null(Value);
-check_type(_Value, ?ANY)    -> true;
-check_type(Value, UnionType) ->
+check_type(Value, ?STRING, A)  -> {is_binary(Value), A};
+check_type(Value, ?NUMBER, A)  -> {is_number(Value), A};
+check_type(Value, ?INTEGER, A) -> {is_integer(Value), A};
+check_type(Value, ?BOOLEAN, A) -> {is_boolean(Value), A};
+check_type(Value, ?OBJECT, A)  -> {is_json_object(Value), A};
+check_type(Value, ?ARRAY, A)   -> {is_array(Value), A};
+check_type(Value, ?NULL, A)    -> {is_null(Value), A};
+check_type(_Value, ?ANY, A)    -> {true, A};
+check_type(Value, UnionType, Accumulator) ->
   case is_array(UnionType) of
-    true  -> check_union_type(Value, UnionType);
-    false -> true
+    true  -> check_union_type(Value, UnionType, Accumulator);
+    false -> {true, Accumulator}
   end.
 
 %% @private
-check_union_type(Value, UnionType) ->
-    lists:any(
-        fun(Type) ->
-            case is_json_object(Type) of
-                true ->
-                    %% case when there's a schema in the array,
-                    %% then we need to validate against
-                    %% that schema
-                    Acc = {ok, {fun dummy_accumulator/3, undefined}},
-                    Path = jesse_json_path:new(),
-                    Acc =:= check_value(Value, unwrap(Type), Type, Path, Acc);
-                false ->
-                    true =:= check_type(Value, Type)
-            end
+check_union_type(Value, UnionType, Accumulator) ->
+    case verbose(Value, UnionType, Accumulator) of
+        {true, _} ->
+            {true, Accumulator}; % do not store bad things
+        {false, Acc} ->
+            {false, Acc}
+    end.
+
+%%     lists:any(
+%%         fun(Type) ->
+%%             case is_json_object(Type) of
+%%                 true ->
+%%                     %% case when there's a schema in the array,
+%%                     %% then we need to validate against
+%%                     %% that schema
+%%                     Acc = Accumulator, %{ok, {fun jesse_utils:collect/3, undefined}},
+%%                     Path = jesse_json_path:new(),
+%%                     Acc =:= check_value(Value, unwrap(Type), Type, Path, Acc);
+%%                 false ->
+%%                     true =:= check_type(Value, Type, Accumulator)
+%%             end
+%%         end,
+%%         UnionType
+%%     ).
+
+verbose(_Value, [], Accumulator) ->
+    {false, Accumulator};
+verbose(Value, [Type | UnionType], Accumulator) ->
+    {Res, Acc} =
+        case is_json_object(Type) of
+            true ->
+                %% case when there's a schema in the array,
+                %% then we need to validate against
+                %% that schema
+                Path = jesse_json_path:new(),
+                case check_value(Value, unwrap(Type), Type, Path, Accumulator) of
+                    true ->
+                        {true, Accumulator};
+                    {error, Acc1} ->
+                        {false, {error, Acc1}}
+                end;
+            false ->
+                case check_type(Value, Type, Accumulator) of
+                    {true, _} ->
+                        {true, Accumulator};
+                    {false, Acc2} ->
+                        {false, Acc2}
+                end
         end,
-        UnionType
-    ).
+    case Res of
+        true ->
+            {true, Acc};
+        false ->
+            verbose(Value, UnionType, Acc)
+    end.
 
 %% @doc 5.2.  properties
 %%
@@ -1001,7 +1039,7 @@ check_divisible_by(_Value, _DivisibleBy) -> true.
 %% is not valid.
 %% @private
 check_disallow(Value, Disallow) ->
-    case check_type(Value, Disallow) of
+    case check_type(Value, Disallow, undefined) of
         true -> false;
         false -> true
     end.
@@ -1123,8 +1161,9 @@ accumulate_error(Path, Error, {_Result, {Fun, Acc0}}) ->
     StringPath = jesse_json_path:to_string(Path),
     {error, {Fun, Fun(StringPath, Error, Acc0)}}.
 
-dummy_accumulator(_Path, _Error, undefined) ->
-    undefined.
+%% dummy_accumulator(Path, _Error, undefined) ->
+%%     %io:format("Path! ~p~n", [Path]),
+%%     undefined.
 
 %%=============================================================================
 %% @doc This check is needed since objects in `jsx' are lists (proplists)

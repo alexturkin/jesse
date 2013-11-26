@@ -19,8 +19,8 @@ failfast(_Path, Error, _) ->
 
 %% @doc Utility function to accumulate errors found during validation.
 %% @private
-collect(StringPath, Error, List) ->
-    [{StringPath, Error} | List].
+collect(StringPath, _Error, List) ->
+    [{StringPath, <<"error">>} | List].
 
 
 %% @doc Explain list of errors in the internal format and return
